@@ -1,21 +1,115 @@
-# Kafka Configuration
+# =============================================================================
+# KAFKA CONFIGURATION - PRODUCTION GRADE
+# =============================================================================
+
+# Kafka Broker Configuration
 spring.kafka.bootstrap-servers: localhost:9092
+# Multiple brokers for high availability: broker1:9092,broker2:9092,broker3:9092
+
+# Consumer Configuration
 spring.kafka.consumer.group-id: avro-consumer-group
 spring.kafka.consumer.key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
 spring.kafka.consumer.value-deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+
+# Schema Registry Configuration
 spring.kafka.consumer.properties.schema.registry.url: http://localhost:8081
 spring.kafka.consumer.properties.specific.avro.reader: true
+# Enable schema registry authentication if needed:
+# spring.kafka.consumer.properties.schema.registry.basic.auth.credentials.source: USER_INFO
+# spring.kafka.consumer.properties.schema.registry.basic.auth.user.info: username:password
+
+# Consumer Behavior Configuration
 spring.kafka.consumer.auto-offset-reset: earliest
 spring.kafka.consumer.enable-auto-commit: false
+spring.kafka.consumer.max.poll.records: 1
+spring.kafka.consumer.max.poll.interval.ms: 300000
+spring.kafka.consumer.session.timeout.ms: 30000
+spring.kafka.consumer.heartbeat.interval.ms: 3000
+spring.kafka.consumer.request.timeout.ms: 40000
+
+# Listener Configuration
 spring.kafka.listener.ack-mode: manual
 spring.kafka.listener.concurrency: 3
+spring.kafka.listener.poll-timeout: 3000
+spring.kafka.listener.type: single
 
-# Application Configuration
+# Error Handling Configuration
+spring.kafka.listener.ack-mode: manual_immediate
+spring.kafka.listener.missing-topics-fatal: false
+spring.kafka.listener.fix-partition-offsets: true
+
+# Producer Configuration (for testing endpoints)
+spring.kafka.producer.key-serializer: org.apache.kafka.common.serialization.StringSerializer
+spring.kafka.producer.value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+spring.kafka.producer.acks: all
+spring.kafka.producer.retries: 3
+spring.kafka.producer.batch-size: 16384
+spring.kafka.producer.linger.ms: 1
+spring.kafka.producer.buffer-memory: 33554432
+spring.kafka.producer.max-in-flight-requests-per-connection: 5
+spring.kafka.producer.enable.idempotence: true
+spring.kafka.producer.compression-type: snappy
+
+# =============================================================================
+# APPLICATION CONFIGURATION
+# =============================================================================
+
+# Consumer Enable/Disable
 kafka.consumer.enabled: true
 kafka.consumer.topic: your-avro-topic
 
+# Error Handling and Monitoring
+kafka.consumer.error.topic: your-avro-topic-dlq
+kafka.consumer.max.retries: 3
+kafka.consumer.retry.delay.ms: 1000
+kafka.consumer.backoff.multiplier: 2.0
+
+# Logging Configuration
+logging.level.com.example.kafkaconsumer: INFO
+logging.level.org.apache.kafka: WARN
+logging.level.org.springframework.kafka: INFO
+logging.pattern.console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# Server Configuration
+server.port: 8080
+server.error.include-message: always
+server.error.include-binding-errors: always
+
+# Actuator Configuration
+management.endpoints.web.exposure.include: health,info,metrics,prometheus
+management.endpoint.health.show-details: always
+management.endpoint.health.show-components: always
+management.health.kafka.enabled: true
+management.metrics.export.prometheus.enabled: true
+
+# =============================================================================
+# PRODUCER-ONLY PROFILE (Consumer Disabled)
+# =============================================================================
 ---
-# Profile for running without consumer (producer only)
 spring.config.activate.on-profile: producer-only
 kafka.consumer.enabled: false
-kafka.consumer.topic: your-avro-topic 
+kafka.consumer.topic: your-avro-topic
+
+# =============================================================================
+# DEVELOPMENT PROFILE
+# =============================================================================
+---
+spring.config.activate.on-profile: dev
+logging.level.com.example.kafkaconsumer: DEBUG
+logging.level.org.apache.kafka: DEBUG
+kafka.consumer.max.retries: 1
+kafka.consumer.retry.delay.ms: 100
+management.endpoints.web.exposure.include: "*"
+
+# =============================================================================
+# PRODUCTION PROFILE
+# =============================================================================
+---
+spring.config.activate.on-profile: prod
+logging.level.com.example.kafkaconsumer: INFO
+logging.level.org.apache.kafka: WARN
+kafka.consumer.max.retries: 5
+kafka.consumer.retry.delay.ms: 5000
+spring.kafka.consumer.max.poll.records: 1
+spring.kafka.consumer.max.poll.interval.ms: 600000
+management.endpoints.web.exposure.include: health,info,metrics 
