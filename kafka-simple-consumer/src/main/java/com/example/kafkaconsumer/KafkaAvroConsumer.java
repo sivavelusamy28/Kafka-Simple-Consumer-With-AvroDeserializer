@@ -4,15 +4,21 @@ import com.example.kafkaconsumer.avro.UserEvent;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Service;
 
 @Service
+@ConditionalOnProperty(name = "kafka.consumer.enabled", havingValue = "true")
 public class KafkaAvroConsumer {
     private static final Logger logger = LoggerFactory.getLogger(KafkaAvroConsumer.class);
 
-    @KafkaListener(topics = "your-avro-topic", containerFactory = "kafkaListenerContainerFactory")
+    @Value("${kafka.consumer.topic}")
+    private String topic;
+
+    @KafkaListener(topics = "${kafka.consumer.topic}", containerFactory = "kafkaListenerContainerFactory")
     public void listen(ConsumerRecord<String, UserEvent> record, Acknowledgment acknowledgment) {
         try {
             UserEvent event = record.value();
