@@ -1,0 +1,168 @@
+package com.example.health; // Add appropriate package declaration
+
+import java.util.List;
+import java.util.Set;
+import java.util.HashSet;
+import javax.annotation.PostConstruct;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.annotation.Scheduled;
+
+/**
+ * Configuration class responsible for monitoring application health
+ * and managing Kafka consumer state based on regional failover logic.
+ */
+@Configuration
+@EnableScheduling
+public class HolisticHealthCheck {
+    
+    private static final Logger LOGGER = LoggerFactory.getLogger(HolisticHealthCheck.class);
+    private static final long DEFAULT_TIMEOUT_MS = 1000L;
+    
+    private final ResiliencyProcessor resiliencyProcessor;
+    private final ApplicationProperties applicationProperties;
+    private final KafkaListenerEndpointRegistry kafkaListenerRegistry;
+    
+    private String currentRegion;
+    private String failoverRegion;
+    private String listenerId;
+    private boolean isPrimaryRegion;
+    
+    /**
+     * Constructor with dependency injection.
+     * 
+     * @param resiliencyProcessor processor for resiliency checks
+     * @param applicationProperties application configuration properties
+     * @param kafkaListenerRegistry Kafka listener registry
+     */
+    public HolisticHealthCheck(
+            ResiliencyProcessor resiliencyProcessor,
+            ApplicationProperties applicationProperties,
+            KafkaListenerEndpointRegistry kafkaListenerRegistry) {
+        this.resiliencyProcessor = resiliencyProcessor;
+        this.applicationProperties = applicationProperties;
+        this.kafkaListenerRegistry = kafkaListenerRegistry;
+    }
+    
+    /**
+     * Initializes configuration values after construction.
+     */
+    @PostConstruct
+    public void initialize() {
+        this.currentRegion = applicationProperties.getCurrentRegion();
+        this.failoverRegion = applicationProperties.getFailoverRegion();
+        this.isPrimaryRegion = applicationProperties.isPrimaryRegion();
+        this.listenerId = applicationProperties.getListenerId();
+        
+        LOGGER.info("HolisticHealthCheck initialized - Current Region: {}, Failover Region: {}, Is Primary: {}",
+                currentRegion, failoverRegion, isPrimaryRegion);
+    }
+    
+    /**
+     * Scheduled task that runs resiliency probes at configured intervals.
+     * Default interval is 1000ms if not configured.
+     */
+    @Scheduled(fixedDelayString = "${application.kafka.resiliency-schedule-rate:1000}")
+    public void runResiliencyProbe() {
+        try {
+            final ResiliencyResponse resiliencyResponse = resiliencyProcessor.process(DEFAULT_TIMEOUT_MS);
+            processResiliencyResponse(resiliencyResponse);
+        } catch (Exception e) {
+            LOGGER.error("Failed to execute resiliency probe", e);
+        }
+    }
+    
+    /**
+     * Processes the resiliency response and manages consumer state accordingly.
+     * 
+     * @param resiliencyResponse the response from resiliency check
+     */
+    private void processResiliencyResponse(ResiliencyResponse resiliencyResponse) {
+        if (resiliencyResponse == null || resiliencyResponse.getActiveRegions() == null) {
+            LOGGER.warn("Invalid resiliency response received");
+            return;
+        }
+        
+        final Set<String> activeRegions = new HashSet<>(resiliencyResponse.getActiveRegions());
+        final MessageListenerContainer consumer = kafkaListenerRegistry.getListenerContainer(listenerId);
+        
+        if (consumer == null) {
+            LOGGER.error("No consumer found for listener ID: {}", listenerId);
+            return;
+        }
+        
+        determineConsumerState(activeRegions, consumer);
+    }
+    
+    /**
+     * Determines whether to pause or resume the consumer based on regional state.
+     * 
+     * @param activeRegions set of currently active regions
+     * @param consumer the Kafka message listener container
+     */
+    private void determineConsumerState(Set<String> activeRegions, MessageListenerContainer consumer) {
+        if (isPrimaryRegion) {
+            handlePrimaryRegion(activeRegions, consumer);
+        } else {
+            handleSecondaryRegion(activeRegions, consumer);
+        }
+    }
+    
+    /**
+     * Handles consumer state for primary region.
+     * 
+     * @param activeRegions set of currently active regions
+     * @param consumer the Kafka message listener container
+     */
+    private void handlePrimaryRegion(Set<String> activeRegions, MessageListenerContainer consumer) {
+        if (activeRegions.contains(currentRegion)) {
+            resumeConsumer(consumer);
+        } else {
+            pauseConsumer(consumer);
+        }
+    }
+    
+    /**
+     * Handles consumer state for secondary/failover region.
+     * 
+     * @param activeRegions set of currently active regions
+     * @param consumer the Kafka message listener container
+     */
+    private void handleSecondaryRegion(Set<String> activeRegions, MessageListenerContainer consumer) {
+        if (activeRegions.contains(failoverRegion)) {
+            pauseConsumer(consumer);
+        } else {
+            resumeConsumer(consumer);
+        }
+    }
+    
+    /**
+     * Pauses the Kafka consumer if it's currently running.
+     * 
+     * @param consumer the Kafka message listener container to pause
+     */
+    private void pauseConsumer(MessageListenerContainer consumer) {
+        if (!consumer.isPauseRequested()) {
+            consumer.pause();
+            LOGGER.info("Kafka consumer paused for listener: {}", listenerId);
+        }
+    }
+    
+    /**
+     * Resumes the Kafka consumer if it's currently paused.
+     * 
+     * @param consumer the Kafka message listener container to resume
+     */
+    private void resumeConsumer(MessageListenerContainer consumer) {
+        if (consumer.isPauseRequested()) {
+            consumer.resume();
+            LOGGER.info("Kafka consumer resumed for listener: {}", listenerId);
+        }
+    }
+}
