@@ -6,8 +6,6 @@ RUN useradd -r -u 6001 -s /bin/bash appusr
 
 RUN apt-get update
 RUN apt-get install -y --no-install-recommends openjdk-17-jre-headless tzdata ca-certificates curl wget
-ENV JAVA_HOME /usr/lib/jvm/java-17-openjdk-amd64
-
 
 
 ARG PASSWORD
@@ -20,10 +18,11 @@ RUN mkdir -p /apps/webapps
 RUN chown -R appusr:appusr /apps
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends wget curl ca-certificates && \
+    apt-get install -y --no-install-recommends wget curl ca-certificates gnupg && \
+    mkdir -p /etc/apt/keyrings && \
     wget -O /etc/apt/keyrings/amazoncorretto.rsa.pub https://apt.corretto.aws/amazoncorretto.rsa.pub && \
-    echo "https://apt.corretto.aws/" >> /etc/apt/repositories && \
+    echo "deb [signed-by=/etc/apt/keyrings/amazoncorretto.rsa.pub] https://apt.corretto.aws stable main" > /etc/apt/sources.list.d/amazon-corretto.list && \
     apt-get update && \
-    apt-get install -y amazon-corretto-17 && \
+    apt-get install -y java-17-amazon-corretto-jdk && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
