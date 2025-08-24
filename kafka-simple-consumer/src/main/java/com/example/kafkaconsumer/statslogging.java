@@ -2,237 +2,238 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Predicate;
-import java.util.stream.Stream;
+import java.util.stream.Collectors;
 
-public class StatsLogger {
-    private static final Logger logger = LoggerFactory.getLogger(StatsLogger.class);
+public class StatsToMdcExtractor {
+    private static final Logger logger = LoggerFactory.getLogger(StatsToMdcExtractor.class);
     
-    // Example stats object
-    public static class StatEntry {
-        private final String key;
-        private final Object value;
-        private final String category;
-        private final long timestamp;
+    /**
+     * Method 1: Extract specific stats and put them directly in MDC
+     * Most efficient for known keys
+     */
+    public static void extractStatsToMdc(Map<String, Object> statsObject, 
+                                        List<String> keysToExtract,
+                                        String mdcPrefix) {
+        // Clear any existing MDC entries with our prefix first (optional)
+        clearMdcWithPrefix(mdcPrefix);
         
-        public StatEntry(String key, Object value, String category) {
-            this.key = key;
-            this.value = value;
-            this.category = category;
-            this.timestamp = System.currentTimeMillis();
+        int extractedCount = 0;
+        for (String key : keysToExtract) {
+            Object value = statsObject.get(key);
+            if (value != null) {
+                // Store in MDC with prefix to avoid conflicts
+                String mdcKey = mdcPrefix != null ? mdcPrefix + "." + key : key;
+                MDC.put(mdcKey, String.valueOf(value));
+                extractedCount++;
+            }
         }
         
-        // Getters
-        public String getKey() { return key; }
-        public Object getValue() { return value; }
-        public String getCategory() { return category; }
-        public long getTimestamp() { return timestamp; }
+        // Store metadata about extraction
+        MDC.put(mdcPrefix + ".extracted_count", String.valueOf(extractedCount));
+        MDC.put(mdcPrefix + ".total_requested", String.valueOf(keysToExtract.size()));
+        
+        logger.info("Extracted {} out of {} requested stats to MDC", 
+                   extractedCount, keysToExtract.size());
     }
     
     /**
-     * Method 1: Stream-based approach with predicates (most flexible)
-     * Best for complex filtering logic
+     * Method 2: Extract stats and return them as a separate map + store in MDC
+     * Useful when you need both the extracted data and MDC logging
      */
-    public static void logStatsWithStream(Collection<StatEntry> stats, 
-                                         Predicate<StatEntry> filter,
-                                         String contextId) {
-        try {
-            // Set context in MDC
-            MDC.put("contextId", contextId);
-            MDC.put("operation", "statsLogging");
-            
-            stats.parallelStream()  // Use parallel for large collections
-                 .filter(filter)
-                 .forEach(stat -> {
-                     // Add stat-specific MDC context
-                     MDC.put("statKey", stat.getKey());
-                     MDC.put("statCategory", stat.getCategory());
-                     
-                     logger.info("Stat: {} = {} [category: {}]", 
-                               stat.getKey(), stat.getValue(), stat.getCategory());
-                     
-                     // Clean up stat-specific MDC
-                     MDC.remove("statKey");
-                     MDC.remove("statCategory");
-                 });
-        } finally {
-            // Clean up context MDC
-            MDC.remove("contextId");
-            MDC.remove("operation");
+    public static Map<String, Object> extractAndStoreinMdc(Map<String, Object> statsObject,
+                                                          List<String> keysToExtract,
+                                                          String mdcPrefix) {
+        Map<String, Object> extractedStats = new HashMap<>();
+        
+        for (String key : keysToExtract) {
+            Object value = statsObject.get(key);
+            if (value != null) {
+                extractedStats.put(key, value);
+                // Also store in MDC
+                String mdcKey = mdcPrefix != null ? mdcPrefix + "." + key : key;
+                MDC.put(mdcKey, String.valueOf(value));
+            }
         }
+        
+        // Store extraction metadata
+        MDC.put(mdcPrefix + ".extracted_count", String.valueOf(extractedStats.size()));
+        
+        logger.info("Extracted stats: {}", extractedStats.keySet());
+        return extractedStats;
     }
     
     /**
-     * Method 2: Traditional loop with batching (memory efficient)
-     * Best for very large collections that need memory management
+     * Method 3: Stream-based extraction (functional approach)
+     * Good for when you want to transform values while extracting
      */
-    public static void logStatsWithBatching(Collection<StatEntry> stats,
-                                          Predicate<StatEntry> filter,
-                                          String contextId,
-                                          int batchSize) {
-        try {
-            MDC.put("contextId", contextId);
-            MDC.put("operation", "batchedStatsLogging");
+    public static void extractStatsWithStream(Map<String, Object> statsObject,
+                                            List<String> keysToExtract,
+                                            String mdcPrefix) {
+        Map<String, String> extractedForMdc = keysToExtract.stream()
+            .filter(statsObject::containsKey)
+            .collect(Collectors.toMap(
+                key -> mdcPrefix != null ? mdcPrefix + "." + key : key,
+                key -> String.valueOf(statsObject.get(key))
+            ));
+        
+        // Bulk add to MDC
+        extractedForMdc.forEach(MDC::put);
+        
+        // Add metadata
+        MDC.put(mdcPrefix + ".extracted_count", String.valueOf(extractedForMdc.size()));
+        
+        logger.info("Stream extracted {} stats to MDC", extractedForMdc.size());
+    }
+    
+    /**
+     * Method 4: Enhanced version with value transformation and validation
+     * Most comprehensive approach
+     */
+    public static void extractStatsAdvanced(Map<String, Object> statsObject,
+                                          List<String> keysToExtract,
+                                          String mdcPrefix,
+                                          boolean includeNulls,
+                                          int maxValueLength) {
+        int extracted = 0;
+        int skipped = 0;
+        
+        for (String key : keysToExtract) {
+            Object value = statsObject.get(key);
             
-            Iterator<StatEntry> iterator = stats.iterator();
-            int processed = 0;
-            int batchCount = 0;
+            // Handle null values based on preference
+            if (value == null && !includeNulls) {
+                skipped++;
+                continue;
+            }
             
-            while (iterator.hasNext()) {
-                List<StatEntry> batch = new ArrayList<>(batchSize);
-                
-                // Collect batch
-                for (int i = 0; i < batchSize && iterator.hasNext(); i++) {
-                    StatEntry stat = iterator.next();
-                    if (filter.test(stat)) {
-                        batch.add(stat);
-                    }
-                }
-                
-                // Process batch
-                if (!batch.isEmpty()) {
-                    MDC.put("batchNumber", String.valueOf(++batchCount));
-                    MDC.put("batchSize", String.valueOf(batch.size()));
-                    
-                    logger.info("Processing batch {} with {} stats", batchCount, batch.size());
-                    
-                    for (StatEntry stat : batch) {
-                        MDC.put("statKey", stat.getKey());
-                        logger.info("Stat: {} = {}", stat.getKey(), stat.getValue());
-                        MDC.remove("statKey");
-                        processed++;
-                    }
-                    
-                    MDC.remove("batchNumber");
-                    MDC.remove("batchSize");
+            // Convert value to string and handle length limits
+            String stringValue = value != null ? String.valueOf(value) : "null";
+            if (stringValue.length() > maxValueLength) {
+                stringValue = stringValue.substring(0, maxValueLength) + "...";
+            }
+            
+            // Store in MDC
+            String mdcKey = mdcPrefix != null ? mdcPrefix + "." + key : key;
+            MDC.put(mdcKey, stringValue);
+            extracted++;
+        }
+        
+        // Store comprehensive metadata
+        MDC.put(mdcPrefix + ".extracted_count", String.valueOf(extracted));
+        MDC.put(mdcPrefix + ".skipped_count", String.valueOf(skipped));
+        MDC.put(mdcPrefix + ".total_stats_available", String.valueOf(statsObject.size()));
+        
+        logger.info("Advanced extraction: {} extracted, {} skipped from {} total keys requested", 
+                   extracted, skipped, keysToExtract.size());
+    }
+    
+    /**
+     * Method 5: Batch extraction for very large key lists
+     * Processes keys in batches to avoid memory issues
+     */
+    public static void extractStatsInBatches(Map<String, Object> statsObject,
+                                           List<String> keysToExtract,
+                                           String mdcPrefix,
+                                           int batchSize) {
+        int totalExtracted = 0;
+        int batchNumber = 0;
+        
+        // Process in batches
+        for (int i = 0; i < keysToExtract.size(); i += batchSize) {
+            int endIndex = Math.min(i + batchSize, keysToExtract.size());
+            List<String> batch = keysToExtract.subList(i, endIndex);
+            batchNumber++;
+            
+            int batchExtracted = 0;
+            for (String key : batch) {
+                Object value = statsObject.get(key);
+                if (value != null) {
+                    String mdcKey = mdcPrefix + ".batch" + batchNumber + "." + key;
+                    MDC.put(mdcKey, String.valueOf(value));
+                    batchExtracted++;
                 }
             }
             
-            logger.info("Completed processing {} stats in {} batches", processed, batchCount);
+            totalExtracted += batchExtracted;
+            MDC.put(mdcPrefix + ".batch" + batchNumber + ".count", String.valueOf(batchExtracted));
             
-        } finally {
-            MDC.remove("contextId");
-            MDC.remove("operation");
+            logger.info("Batch {} processed: {} keys extracted", batchNumber, batchExtracted);
         }
+        
+        MDC.put(mdcPrefix + ".total_extracted", String.valueOf(totalExtracted));
+        MDC.put(mdcPrefix + ".total_batches", String.valueOf(batchNumber));
     }
     
     /**
-     * Method 3: Enhanced iterator with custom filtering (most performant)
-     * Best for simple filters and maximum performance
+     * Utility method to clear MDC entries with specific prefix
      */
-    public static void logStatsOptimized(Map<String, StatEntry> statsMap,
-                                       Set<String> keysToLog,
-                                       String contextId) {
-        try {
-            MDC.put("contextId", contextId);
-            MDC.put("operation", "optimizedStatsLogging");
-            
-            int loggedCount = 0;
-            
-            // Direct key lookup - O(1) for each key vs O(n) filtering
-            for (String key : keysToLog) {
-                StatEntry stat = statsMap.get(key);
-                if (stat != null) {
-                    MDC.put("statKey", key);
-                    MDC.put("statCategory", stat.getCategory());
-                    
-                    logger.info("Stat: {} = {} [{}]", 
-                              key, stat.getValue(), stat.getCategory());
-                    
-                    MDC.remove("statKey");
-                    MDC.remove("statCategory");
-                    loggedCount++;
-                }
-            }
-            
-            logger.info("Logged {} out of {} requested stats", loggedCount, keysToLog.size());
-            
-        } finally {
-            MDC.remove("contextId");
-            MDC.remove("operation");
-        }
-    }
-    
-    /**
-     * Method 4: Asynchronous logging for very large collections
-     */
-    public static void logStatsAsync(Collection<StatEntry> stats,
-                                   Predicate<StatEntry> filter,
-                                   String contextId) {
-        // For async, we need to capture MDC context
+    public static void clearMdcWithPrefix(String prefix) {
+        if (prefix == null) return;
+        
         Map<String, String> contextMap = MDC.getCopyOfContextMap();
-        
-        // Process asynchronously
-        stats.parallelStream()
-             .filter(filter)
-             .forEach(stat -> {
-                 // Set MDC context in the thread
-                 if (contextMap != null) {
-                     MDC.setContextMap(contextMap);
-                 }
-                 MDC.put("contextId", contextId);
-                 MDC.put("statKey", stat.getKey());
-                 
-                 logger.info("Async Stat: {} = {}", stat.getKey(), stat.getValue());
-                 
-                 // Clean up
-                 MDC.clear();
-             });
+        if (contextMap != null) {
+            contextMap.keySet().stream()
+                .filter(key -> key.startsWith(prefix))
+                .forEach(MDC::remove);
+        }
     }
     
-    // Example usage and testing
+    /**
+     * Utility method to log all current MDC contents (for debugging)
+     */
+    public static void logMdcContents(String context) {
+        Map<String, String> mdcMap = MDC.getCopyOfContextMap();
+        if (mdcMap != null && !mdcMap.isEmpty()) {
+            logger.info("MDC Contents [{}]: {}", context, mdcMap);
+        } else {
+            logger.info("MDC is empty [{}]", context);
+        }
+    }
+    
+    // Example usage
     public static void main(String[] args) {
-        // Create sample large collection
-        List<StatEntry> largeStatsList = new ArrayList<>();
-        Map<String, StatEntry> statsMap = new ConcurrentHashMap<>();
-        
-        // Populate with sample data
-        for (int i = 0; i < 100000; i++) {
-            String key = "metric_" + i;
-            StatEntry stat = new StatEntry(key, i * 1.5, 
-                                         i % 3 == 0 ? "performance" : "business");
-            largeStatsList.add(stat);
-            statsMap.put(key, stat);
+        // Sample large stats object
+        Map<String, Object> statsObject = new HashMap<>();
+        for (int i = 0; i < 10000; i++) {
+            statsObject.put("metric_" + i, Math.random() * 100);
+            statsObject.put("counter_" + i, i);
+            statsObject.put("status_" + i, i % 2 == 0 ? "active" : "inactive");
         }
         
-        // Example 1: Log only performance metrics
-        System.out.println("=== Stream-based filtering ===");
-        logStatsWithStream(largeStatsList.subList(0, 1000), // First 1000 for demo
-                          stat -> "performance".equals(stat.getCategory()),
-                          "ctx-001");
+        // Keys we want to extract and log
+        List<String> keysToLog = Arrays.asList(
+            "metric_10", "metric_25", "metric_50", 
+            "counter_100", "counter_200", 
+            "status_5", "status_15", "nonexistent_key"
+        );
         
-        // Example 2: Batched processing
-        System.out.println("\n=== Batched processing ===");
-        logStatsWithBatching(largeStatsList.subList(0, 1000),
-                           stat -> stat.getValue() instanceof Number && 
-                                  ((Number)stat.getValue()).doubleValue() > 50,
-                           "ctx-002", 100);
+        System.out.println("=== Method 1: Direct extraction to MDC ===");
+        extractStatsToMdc(statsObject, keysToLog, "stats");
+        logMdcContents("after extraction");
         
-        // Example 3: Optimized lookup
-        System.out.println("\n=== Optimized lookup ===");
-        Set<String> keysToLog = Set.of("metric_10", "metric_50", "metric_100");
-        logStatsOptimized(statsMap, keysToLog, "ctx-003");
-    }
-    
-    // Utility class for common filters
-    public static class StatFilters {
-        public static Predicate<StatEntry> byCategory(String category) {
-            return stat -> category.equals(stat.getCategory());
-        }
+        // Clear MDC for next example
+        MDC.clear();
         
-        public static Predicate<StatEntry> byValueThreshold(double threshold) {
-            return stat -> stat.getValue() instanceof Number && 
-                          ((Number)stat.getValue()).doubleValue() > threshold;
-        }
+        System.out.println("\n=== Method 2: Extract and return map ===");
+        Map<String, Object> extracted = extractAndStoreinMdc(statsObject, keysToLog, "perf");
+        System.out.println("Returned map size: " + extracted.size());
+        logMdcContents("after extract and store");
         
-        public static Predicate<StatEntry> recentOnly(long maxAgeMs) {
-            long cutoff = System.currentTimeMillis() - maxAgeMs;
-            return stat -> stat.getTimestamp() > cutoff;
-        }
+        // Clear MDC
+        MDC.clear();
         
-        public static Predicate<StatEntry> keyPattern(String pattern) {
-            return stat -> stat.getKey().matches(pattern);
-        }
+        System.out.println("\n=== Method 3: Stream-based extraction ===");
+        extractStatsWithStream(statsObject, keysToLog, "stream");
+        logMdcContents("after stream extraction");
+        
+        // Clear MDC
+        MDC.clear();
+        
+        System.out.println("\n=== Method 4: Advanced extraction ===");
+        extractStatsAdvanced(statsObject, keysToLog, "advanced", false, 50);
+        logMdcContents("after advanced extraction");
+        
+        // Clean up
+        MDC.clear();
     }
 }
