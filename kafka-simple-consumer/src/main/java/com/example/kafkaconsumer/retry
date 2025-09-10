@@ -1,0 +1,59 @@
+
+    @Bean
+    public RetryListener retryListener() {
+        return new RetryListener() {
+            
+            @Override
+            public <T, E extends Throwable> boolean open(RetryContext context, RetryCallback<T, E> callback) {
+                String operationName = getOperationName(callback);
+                logger.info("Starting retry operation: {}", operationName);
+                context.setAttribute("operationName", operationName);
+                context.setAttribute("startTime", System.currentTimeMillis());
+                return true;
+            }
+            
+            @Override
+            public <T, E extends Throwable> void onError(RetryContext context, RetryCallback<T, E> callback, Throwable throwable) {
+                String operationName = (String) context.getAttribute("operationName");
+                int retryCount = context.getRetryCount();
+                
+                logger.warn("Retry attempt {} failed for operation: {} - Error: {} - Message: {}", 
+                    retryCount, 
+                    operationName, 
+                    throwable.getClass().getSimpleName(), 
+                    throwable.getMessage());
+                
+                // Log stack trace for debugging (optional)
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Full stack trace for retry attempt {}: ", retryCount, throwable);
+                }
+            }
+            
+            @Override
+            public <T, E extends Throwable> void close(RetryContext context, RetryCallback<T, E> callback, Throwable throwable) {
+                String operationName = (String) context.getAttribute("operationName");
+                Long startTime = (Long) context.getAttribute("startTime");
+                long duration = System.currentTimeMillis() - startTime;
+                int retryCount = context.getRetryCount();
+                
+                if (throwable == null) {
+                    logger.info("Retry operation succeeded: {} - Total attempts: {} - Duration: {}ms", 
+                        operationName, retryCount, duration);
+                } else {
+                    logger.error("Retry operation failed permanently: {} - Total attempts: {} - Duration: {}ms - Final error: {}", 
+                        operationName, retryCount, duration, throwable.getMessage());
+                }
+            }
+            
+            private String getOperationName(RetryCallback<?, ?> callback) {
+                // Extract a meaningful operation name from the callback
+                String className = callback.getClass().getSimpleName();
+                if (className.contains("$")) {
+                    // Handle lambda expressions
+                    return "RetryOperation";
+                }
+                return className;
+            }
+        };
+    }
+}
