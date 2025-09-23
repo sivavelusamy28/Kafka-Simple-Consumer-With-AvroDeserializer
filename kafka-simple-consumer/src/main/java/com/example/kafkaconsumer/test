@@ -1,44 +1,30 @@
-@Configuration
-public class KafkaConfiguration {
+public class Test {
     
-    private static final Logger CONFIG_LOG = LoggerFactory.getLogger(KafkaConfiguration.class);
-    
-    @Autowired
-    private KafkaMetrics kafkaMetrics;
-    
-    @Bean
-    DefaultErrorHandler errorHandler() {
-        AtomicLong errorCount = new AtomicLong(0);
-        AtomicLong lastLogTime = new AtomicLong(0);
+    /**
+     * Generic deduplication using a custom key extractor function.
+     * Last occurrence wins for duplicate keys.
+     */
+    public <T> List<T> dedupe(List<T> items, Function<T, String> keyExtractor) {
+        if (items == null || items.isEmpty()) {
+            return new ArrayList<>();
+        }
         
-        DefaultErrorHandler handler = new DefaultErrorHandler((record, ex) -> {
-            // Clean separation - metrics handled by dedicated component
-            kafkaMetrics.recordError();
-            
-            long total = errorCount.incrementAndGet();
-            
-            if (shouldLog(total, lastLogTime)) {
-                CONFIG_LOG.error("Kafka error #{}: topic={}, partition={}, offset={}, type={}", 
-                    total, record.topic(), record.partition(), record.offset(),
-                    ex.getClass().getSimpleName());
-                lastLogTime.set(System.currentTimeMillis());
+        Map<String, T> uniqueItems = new LinkedHashMap<>();
+        
+        for (T item : items) {
+            if (item != null) {
+                String key = keyExtractor.apply(item);
+                if (key != null && !key.trim().isEmpty()) {
+                    uniqueItems.put(key, item);
+                }
             }
-            
-        }, new FixedBackOff(100L, 2));
+        }
         
-        handler.addNotRetryableExceptions(
-            SerializationException.class,
-            DeserializationException.class,
-            RecordTooLargeException.class
-        );
-        
-        handler.setCommitRecovered(true);
-        return handler;
-    }
-    
-    private boolean shouldLog(long errorCount, AtomicLong lastLogTime) {
-        return errorCount == 1 || errorCount == 10 || errorCount == 100 || 
-               errorCount == 1000 || errorCount % 10000 == 0 ||
-               System.currentTimeMillis() - lastLogTime.get() > 60000;
+        return new ArrayList<>(uniqueItems.values());
     }
 }
+
+// Usage examples:
+// dedupe(statsList, stat -> stat.getKey());
+// dedupe(namedItems, item -> item.getName());
+// dedupe(objects, obj -> obj.getId());
