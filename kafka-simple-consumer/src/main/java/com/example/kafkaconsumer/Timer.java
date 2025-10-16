@@ -1,185 +1,221 @@
+// 1. Main Consumer Class - SimpleDelayKafkaConsumer.java
+package com.example.kafka;
+
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Service;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-
-import java.time.Duration;
-import java.time.Instant;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
-@Slf4j
 @Service
-public class OptimizedBatchDelayConsumer {
+public class SimpleDelayKafkaConsumer {
     
-    private static final long DELAY_SECONDS = 5;
+    private static final Logger log = LoggerFactory.getLogger(SimpleDelayKafkaConsumer.class);
+    private static final long DELAY_MILLIS = 5000; // 5 seconds
     
-    @Value("${kafka.consumer.max-poll-interval-ms:300000}") // 5 minutes default
-    private long maxPollIntervalMs;
-    
-    @Value("${kafka.consumer.heartbeat-interval-ms:3000}") // 3 seconds default
-    private long heartbeatIntervalMs;
-    
-    /**
-     * Optimized approach that checks the newest (last) record in batch
-     * but calculates the exact wait time needed
-     */
     @KafkaListener(
         topics = "${kafka.topic.name}",
         containerFactory = "kafkaListenerContainerFactory"
     )
-    public void consumeBatchWithSmartDelay(
+    public void consumeWithDelay(
             List<ConsumerRecord<String, String>> records,
             Acknowledgment acknowledgment) {
         
-        long startTime = System.currentTimeMillis();
-        
         try {
-            log.info("Received batch of {} records", records.size());
-            
             if (records.isEmpty()) {
                 acknowledgment.acknowledge();
                 return;
             }
             
-            // Get the NEWEST record (last in batch) - this ensures all records are at least 5 seconds old
+            // Get the newest (last) record in the batch
             ConsumerRecord<String, String> newestRecord = records.get(records.size() - 1);
-            long newestTimestamp = newestRecord.timestamp();
+            long newestRecordTime = newestRecord.timestamp();
             
-            // Calculate how long to wait
-            long targetProcessTime = newestTimestamp + (DELAY_SECONDS * 1000);
+            // Calculate when this newest record can be released (5 seconds after it entered Kafka)
+            long releaseTime = newestRecordTime + DELAY_MILLIS;
+            
+            // Check if we need to wait
             long currentTime = System.currentTimeMillis();
-            long waitTime = targetProcessTime - currentTime;
-            
-            // Log batch time span for monitoring
-            ConsumerRecord<String, String> oldestRecord = records.get(0);
-            long batchTimeSpan = newestTimestamp - oldestRecord.timestamp();
-            log.info("Batch time span: {} ms (oldest: {}, newest: {})", 
-                batchTimeSpan,
-                Instant.ofEpochMilli(oldestRecord.timestamp()),
-                Instant.ofEpochMilli(newestTimestamp));
+            long waitTime = releaseTime - currentTime;
             
             if (waitTime > 0) {
-                // Safety check: ensure we don't wait longer than max.poll.interval.ms
-                long maxSafeWaitTime = maxPollIntervalMs - (currentTime - startTime) - 10000; // 10s safety margin
-                
-                if (waitTime > maxSafeWaitTime) {
-                    log.warn("Required wait time {} ms exceeds safe limit {} ms. Processing immediately to avoid rebalancing.",
-                        waitTime, maxSafeWaitTime);
-                    waitTime = 0;
-                } else {
-                    log.info("Waiting {} ms before processing batch (newest record needs {} second delay)",
-                        waitTime, DELAY_SECONDS);
-                    
-                    // Smart wait with periodic heartbeats (Spring Kafka handles this automatically)
-                    Thread.sleep(waitTime);
-                }
+                log.info("Waiting {} ms to ensure 5-second delay. Batch size: {}", 
+                    waitTime, records.size());
+                Thread.sleep(waitTime);
             } else {
-                log.info("All records in batch are older than {} seconds, processing immediately", DELAY_SECONDS);
+                log.info("No wait needed. Records already aged. Batch size: {}", 
+                    records.size());
             }
             
-            // Process the batch
+            // Now process all records - they've all waited at least 5 seconds
             processBatch(records);
             
             // Acknowledge after successful processing
             acknowledgment.acknowledge();
             
-            long totalProcessingTime = System.currentTimeMillis() - startTime;
-            log.info("Batch processed successfully in {} ms", totalProcessingTime);
-            
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("Interrupted while waiting", e);
-            // Don't acknowledge - let Kafka retry
         } catch (Exception e) {
             log.error("Error processing batch", e);
-            // Depending on your error handling strategy:
-            // Option 1: Don't acknowledge, let Kafka retry
-            // Option 2: Send to DLQ and acknowledge
-            // Option 3: Partial processing with seek
-        }
-    }
-    
-    /**
-     * Alternative approach: Check multiple timestamps for better accuracy
-     */
-    @KafkaListener(
-        topics = "${kafka.topic.name.advanced}",
-        containerFactory = "kafkaListenerContainerFactory",
-        autoStartup = "false" // Disable by default, enable if you want to use this approach
-    )
-    public void consumeBatchWithAdvancedDelay(
-            List<ConsumerRecord<String, String>> records,
-            Acknowledgment acknowledgment) {
-        
-        long startTime = System.currentTimeMillis();
-        
-        try {
-            log.info("Advanced: Received batch of {} records", records.size());
-            
-            if (records.isEmpty()) {
-                acknowledgment.acknowledge();
-                return;
-            }
-            
-            // Sample approach: Check first, middle, and last records
-            int size = records.size();
-            ConsumerRecord<String, String> firstRecord = records.get(0);
-            ConsumerRecord<String, String> middleRecord = records.get(size / 2);
-            ConsumerRecord<String, String> lastRecord = records.get(size - 1);
-            
-            // Use the most recent timestamp to ensure all records meet the delay requirement
-            long mostRecentTimestamp = Math.max(
-                Math.max(firstRecord.timestamp(), middleRecord.timestamp()),
-                lastRecord.timestamp()
-            );
-            
-            // Calculate precise wait time
-            long targetProcessTime = mostRecentTimestamp + (DELAY_SECONDS * 1000);
-            long currentTime = System.currentTimeMillis();
-            long waitTime = targetProcessTime - currentTime;
-            
-            // Validate wait time against consumer timeout
-            if (waitTime > 0 && waitTime < (maxPollIntervalMs - 20000)) { // 20s safety margin
-                log.info("Advanced: Waiting {} ms for batch delay", waitTime);
-                Thread.sleep(waitTime);
-            } else if (waitTime >= (maxPollIntervalMs - 20000)) {
-                log.warn("Advanced: Wait time {} ms too long, processing immediately", waitTime);
-            }
-            
-            processBatch(records);
-            acknowledgment.acknowledge();
-            
-        } catch (Exception e) {
-            log.error("Advanced: Error processing batch", e);
+            // Don't acknowledge on error - let Kafka retry
         }
     }
     
     private void processBatch(List<ConsumerRecord<String, String>> records) {
-        // Process records in parallel for better performance
-        records.parallelStream().forEach(record -> {
+        log.info("Processing {} records", records.size());
+        
+        for (ConsumerRecord<String, String> record : records) {
             try {
-                processSingleRecord(record);
+                // YOUR BUSINESS LOGIC GOES HERE
+                processRecord(record);
             } catch (Exception e) {
                 log.error("Error processing record with key: {}", record.key(), e);
-                // Track failed records for retry or DLQ
+                // Handle individual record failures as needed
             }
-        });
+        }
     }
     
-    private void processSingleRecord(ConsumerRecord<String, String> record) {
-        long actualDelay = System.currentTimeMillis() - record.timestamp();
+    private void processRecord(ConsumerRecord<String, String> record) {
+        // YOUR ACTUAL BUSINESS LOGIC
+        // Example:
+        log.debug("Processing: key={}, value={}", record.key(), record.value());
         
-        log.debug("Processing record: key={}, actualDelay={}ms, timestamp={}", 
-            record.key(), 
-            actualDelay,
-            Instant.ofEpochMilli(record.timestamp()));
-        
-        // Your business logic here
-        // ...
+        // Add your processing logic here:
+        // - Parse the message
+        // - Save to database
+        // - Call external service
+        // - etc.
     }
 }
+
+// ============================================================
+// 2. Kafka Configuration Class - KafkaConsumerConfig.java
+// ============================================================
+package com.example.kafka;
+
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.listener.ContainerProperties;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Configuration
+public class KafkaConsumerConfig {
+    
+    @Value("${spring.kafka.bootstrap-servers}")
+    private String bootstrapServers;
+    
+    @Value("${spring.kafka.consumer.group-id}")
+    private String groupId;
+    
+    @Bean
+    public ConsumerFactory<String, String> consumerFactory() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        
+        // Batch settings
+        props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 500);
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+        
+        // CRITICAL: Prevent rebalancing during 5-second delay
+        props.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, 300000); // 5 minutes
+        
+        return new DefaultKafkaConsumerFactory<>(props);
+    }
+    
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, String> factory = 
+            new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(consumerFactory());
+        
+        // Enable batch processing
+        factory.setBatchListener(true);
+        
+        // Manual acknowledgment
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);
+        
+        return factory;
+    }
+}
+
+// ============================================================
+// 3. Application Properties - application.yml
+// ============================================================
+/*
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: delayed-consumer-group
+      enable-auto-commit: false
+      max-poll-records: 500
+      properties:
+        max.poll.interval.ms: 300000  # 5 minutes - prevents rebalancing
+
+kafka:
+  topic:
+    name: your-topic-name
+
+logging:
+  level:
+    root: INFO
+    com.example.kafka: DEBUG
+*/
+
+// ============================================================
+// 4. Main Application Class - KafkaDelayApplication.java
+// ============================================================
+package com.example.kafka;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.kafka.annotation.EnableKafka;
+
+@SpringBootApplication
+@EnableKafka
+public class KafkaDelayApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(KafkaDelayApplication.class, args);
+    }
+}
+
+// ============================================================
+// 5. Maven Dependencies - pom.xml
+// ============================================================
+/*
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.kafka</groupId>
+        <artifactId>spring-kafka</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    
+    <!-- Optional but recommended -->
+    <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <optional>true</optional>
+    </dependency>
+</dependencies>
+*/
