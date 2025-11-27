@@ -1,0 +1,20 @@
+/**
+ * Convert epoch milliseconds to ISO 8601 format with 12 fractional digits
+ * Example: 1732737660289L -> "2025-11-27T18:41:00.289000000000"
+ */
+private String formatLongToIso8601With12Digits(long epochMillis) {
+    Instant instant = Instant.ofEpochMilli(epochMillis);
+    
+    // Convert to LocalDateTime (or keep as Instant depending on timezone needs)
+    LocalDateTime dateTime = LocalDateTime.ofInstant(instant, ZoneId.systemDefault());
+    
+    // Format base time
+    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
+    String baseTime = dateTime.format(formatter);
+    
+    // Get milliseconds from the original long and pad to 12 digits
+    long millis = epochMillis % 1000;  // Get last 3 digits (milliseconds)
+    String fractionalSeconds = String.format(".%03d000000000", millis);
+    
+    return baseTime + fractionalSeconds;
+}
